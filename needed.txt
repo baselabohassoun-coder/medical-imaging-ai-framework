@@ -1,0 +1,5 @@
+needed
+streamlit
+torch
+monai
+pillow
