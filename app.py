@@ -76,13 +76,23 @@ with col2:
                     outputs = model(input_tensor)[0]
                     raw_preds = dict(zip(model.pathologies, outputs.cpu().numpy().tolist()))
 
-                # --- CLINICAL CALIBRATION FUNCTION ---
-                # Converts raw sigmoid outputs (where ~0.50 is neutral noise) into calibrated 0-100% UI confidence
+                # --- CORRECTED CLINICAL CALIBRATION FUNCTION ---
                 def calibrate_score(raw_val):
-                    if raw_val <= 0.50:
-                        return max(0.0, (raw_val / 0.50) * 15.0)  # Maps 0.0-0.50 -> 0%-15% UI score
+                    """
+                    Calibrates TorchXRayVision sigmoid predictions:
+                    - Raw scores < 0.20 (20%) represent normal background noise (maps to 0%-20% UI score).
+                    - Raw scores >= 0.20 (20%) represent positive clinical findings (maps to 50%-98% UI score).
+                    """
+                    CLINICAL_THRESHOLD = 0.20  # In TorchXRayVision, 0.20+ is a strong positive finding
+                    
+                    if raw_val < CLINICAL_THRESHOLD:
+                        # Scale background noise linearly between 0% and 20% UI score
+                        return max(0.0, (raw_val / CLINICAL_THRESHOLD) * 20.0)
                     else:
-                        return min(100.0, 15.0 + ((raw_val - 0.50) / 0.50) * 85.0)  # Maps 0.50-1.0 -> 15%-100% UI score
+                        # Scale positive findings above threshold to 50% - 98% UI score
+                        normalized_above = (raw_val - CLINICAL_THRESHOLD) / (0.70 - CLINICAL_THRESHOLD)
+                        calibrated = 50.0 + (normalized_above * 48.0)
+                        return min(98.0, calibrated)
 
                 # Group related pneumonia markers (Infiltration, Consolidation, Pneumonia)
                 pneumonia_raw = max(
