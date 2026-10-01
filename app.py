@@ -1,13 +1,15 @@
 import streamlit as st
 from PIL import Image
 import torch
+import torchvision
 import torchvision.transforms as transforms
-from monai.networks.nets import densenet121
+import numpy as np
+import torchxrayvision as xrv
 
 # 1. Page Configuration and Title Styling
 st.set_page_config(page_title="Radiologist AI Assistant", layout="wide")
 st.title("🔍 Radiologist AI Assistant")
-st.write("An open-source computer vision support tool utilizing the MONAI framework for rapid scan evaluation.")
+st.write("An open-source computer vision support tool utilizing pre-trained deep learning weights for rapid scan evaluation.")
 
 # --- SIDEBAR: CLINICAL PATIENT DOSSIER ---
 st.sidebar.header("📋 Patient Clinical Dossier")
@@ -16,10 +18,11 @@ patient_age = st.sidebar.number_input("Patient Age", min_value=0, max_value=120,
 patient_id = st.sidebar.text_input("Medical Record ID", placeholder="e.g., RAD-2026-77")
 diagnostic_notes = st.sidebar.text_area("Clinical Notes / Symptoms", placeholder="Type any pre-existing symptoms here...")
 
-# 2. Initialize the Medical Neural Network Architecture
+# 2. Initialize the Pre-trained Medical Neural Network Architecture
 @st.cache_resource
 def load_medical_model():
-    model = densenet121(spatial_dims=2, in_channels=1, out_channels=3)
+    # DenseNet121 pre-trained on 100k+ clinical chest X-rays (NIH, CheXpert, MIMIC)
+    model = xrv.models.DenseNet(weights="densenet121-res224-all")
     model.eval() 
     return model
 
@@ -35,7 +38,6 @@ with col1:
     # --- CRITICAL REAL-WORLD SAFETY GATE ---
     st.markdown("---")
     st.subheader("🛡️ Clinical Quality Assurance")
-    # This force-requires the clinician to manually verify the anatomy, standard in SaMD deployments
     anatomy_confirmed = st.checkbox("Confirm uploaded image is an Anterior-Posterior Thoracic (Chest) Scan", value=False)
 
 with col2:
@@ -48,53 +50,63 @@ with col2:
         
         # Check if the manual verification box is unchecked
         if not anatomy_confirmed:
-            st.error("⚠️ ANATOMICAL SAFETY GATE ACTIVE")
+            st.error("⚠️️ ANATOMICAL SAFETY GATE ACTIVE")
             st.warning("The neural vision pipeline requires mandatory anatomical confirmation before computing diagnostic weight matrices.")
             st.info("Please verify that the uploaded scan is a thoracic chest profile by checking the box under the upload panel to unlock the AI evaluation metrics.")
         else:
             st.success("✅ Thoracic Chest X-ray profile validated. Initializing pattern matching...")
             
-            # --- THE AI EVALUATION PIPELINE ---
-            with st.spinner("MONAI backend analyzing pixel matrices..."):
-                preprocess = transforms.Compose([
-                    transforms.Grayscale(num_output_channels=1),
-                    transforms.Resize((224, 224)),
-                    transforms.ToTensor(),
+            # --- REAL AI EVALUATION PIPELINE ---
+            with st.spinner("Pre-trained neural network analyzing pixel matrices..."):
+                # Preprocess image specifically for TorchXRayVision
+                img_gray = image.convert("L")
+                img_np = np.array(img_gray)
+                img_normalized = xrv.datasets.normalize(img_np, 255)
+                img_tensor = img_normalized[None, ...]
+
+                transform = torchvision.transforms.Compose([
+                    xrv.datasets.XRayCenterCrop(),
+                    xrv.datasets.XRayResizer(224)
                 ])
-                
-                input_tensor = preprocess(image).unsqueeze(0)
-                
+                img_transformed = transform(img_tensor)
+                input_tensor = torch.from_numpy(img_transformed).unsqueeze(0)
+
+                # Execute Model Inference
                 with torch.no_grad():
-                    outputs = model(input_tensor)
+                    outputs = model(input_tensor)[0]
+                    preds = dict(zip(model.pathologies, outputs.cpu().numpy().tolist()))
+
+                # Extract pathology scores and convert to percentages (0 - 100%)
+                pneumonia_score = max(0.0, min(100.0, float(preds.get("Pneumonia", 0.0)) * 100))
+                mass_nodule_score = max(0.0, min(100.0, max(preds.get("Mass", 0.0), preds.get("Nodule", 0.0)) * 100))
                 
-                st.subheader("📊 Diagnostic Probability Breakdown")
-                findings = ["Pneumonia Signs", "Mass / Nodules", "Normal Healthy Tissues"]
-                
-                # Calibrated baseline mapping modeling the real NIH dataset metrics
-                filename_lower = uploaded_file.name.lower()
-                simulated_scores = {
-                    "Pneumonia Signs": 12.45,
-                    "Mass / Nodules": 8.12,
-                    "Normal Healthy Tissues": 79.43
+                # Estimate normal healthy tissue probability based on total pathology burden
+                max_pathology_val = max([max(0.0, float(v)) for v in preds.values()])
+                normal_score = max(0.0, min(100.0, (1.0 - max_pathology_val) * 100))
+
+                real_scores = {
+                    "Pneumonia Signs": pneumonia_score,
+                    "Mass / Nodules": mass_nodule_score,
+                    "Normal Healthy Tissues": normal_score
                 }
-                
-                # Context-aware vector shifts based on file naming string values
-                if "pneumonia" in filename_lower:
-                    simulated_scores = {"Pneumonia Signs": 84.62, "Mass / Nodules": 5.18, "Normal Healthy Tissues": 10.20}
-                elif "mass" in filename_lower or "tumor" in filename_lower:
-                    simulated_scores = {"Pneumonia Signs": 4.31, "Mass / Nodules": 91.25, "Normal Healthy Tissues": 4.44}
-                
-                for finding in findings:
-                    prob_percentage = simulated_scores[finding]
+
+                st.subheader("📊 Diagnostic Probability Breakdown")
+                for finding, prob_percentage in real_scores.items():
                     st.write(f"**{finding}**")
                     st.progress(int(prob_percentage))
                     st.write(f"Confidence score: {prob_percentage:.2f}%")
-            
+
+                # Expanded clinical breakdown displaying top predictions
+                with st.expander("🔬 Detailed Multi-Pathology Spectrum (Real Model Outputs)"):
+                    sorted_pathologies = sorted(preds.items(), key=lambda x: x[1], reverse=True)
+                    for path_name, score in sorted_pathologies[:5]:
+                        st.write(f"• **{path_name}:** {max(0.0, score)*100:.1f}% correlation")
+
             # --- AUTOMATIC REPORT GENERATION ---
             st.markdown("---")
             st.header("📝 Automated Clinical Findings Report")
             
-            highest_finding = max(simulated_scores, key=simulated_scores.get)
+            highest_finding = max(real_scores, key=real_scores.get)
             
             report_text = f"""==================================================
 RADIOLOGY DEPARTMENT SERVICES
@@ -108,13 +120,13 @@ Record ID: {patient_id if patient_id else 'NOT SPECIFIED'}
 [CLINICAL CONTEXT]
 Presented Symptoms: {diagnostic_notes if diagnostic_notes else 'None documented.'}
 
-[COMPUTER VISION FINDINGS (MONAI BACKEND)]
+[COMPUTER VISION FINDINGS (TORCHXRAYVISION BACKEND)]
 Primary Structural Density Match: {highest_finding}
 
 [PROBABILITY BREAKDOWN METRICS]
-- Pneumonia Signs: {simulated_scores['Pneumonia Signs']:.2f}%
-- Mass / Nodules: {simulated_scores['Mass / Nodules']:.2f}%
-- Normal Healthy Tissues: {simulated_scores['Normal Healthy Tissues']:.2f}%
+- Pneumonia Signs: {real_scores['Pneumonia Signs']:.2f}%
+- Mass / Nodules: {real_scores['Mass / Nodules']:.2f}%
+- Normal Healthy Tissues: {real_scores['Normal Healthy Tissues']:.2f}%
 
 [DIAGNOSTIC NOTICE]
 The computer vision system flags structural metrics matching '{highest_finding}' as the highest probabilistic correlation. This output is strictly designed for workflow prioritization and rapid triage support. 
