@@ -50,7 +50,7 @@ with col2:
         
         # Check if the manual verification box is unchecked
         if not anatomy_confirmed:
-            st.error("⚠️️ ANATOMICAL SAFETY GATE ACTIVE")
+            st.error("⚠️ ANATOMICAL SAFETY GATE ACTIVE")
             st.warning("The neural vision pipeline requires mandatory anatomical confirmation before computing diagnostic weight matrices.")
             st.info("Please verify that the uploaded scan is a thoracic chest profile by checking the box under the upload panel to unlock the AI evaluation metrics.")
         else:
@@ -74,39 +74,58 @@ with col2:
                 # Execute Model Inference
                 with torch.no_grad():
                     outputs = model(input_tensor)[0]
-                    preds = dict(zip(model.pathologies, outputs.cpu().numpy().tolist()))
+                    raw_preds = dict(zip(model.pathologies, outputs.cpu().numpy().tolist()))
 
-                # Extract pathology scores and convert to percentages (0 - 100%)
-                pneumonia_score = max(0.0, min(100.0, float(preds.get("Pneumonia", 0.0)) * 100))
-                mass_nodule_score = max(0.0, min(100.0, max(preds.get("Mass", 0.0), preds.get("Nodule", 0.0)) * 100))
+                # --- CLINICAL CALIBRATION FUNCTION ---
+                # Converts raw sigmoid outputs (where ~0.50 is neutral noise) into calibrated 0-100% UI confidence
+                def calibrate_score(raw_val):
+                    if raw_val <= 0.50:
+                        return max(0.0, (raw_val / 0.50) * 15.0)  # Maps 0.0-0.50 -> 0%-15% UI score
+                    else:
+                        return min(100.0, 15.0 + ((raw_val - 0.50) / 0.50) * 85.0)  # Maps 0.50-1.0 -> 15%-100% UI score
+
+                # Group related pneumonia markers (Infiltration, Consolidation, Pneumonia)
+                pneumonia_raw = max(
+                    raw_preds.get("Pneumonia", 0.0),
+                    raw_preds.get("Infiltration", 0.0),
+                    raw_preds.get("Consolidation", 0.0)
+                )
+                mass_raw = max(
+                    raw_preds.get("Mass", 0.0), 
+                    raw_preds.get("Nodule", 0.0)
+                )
+
+                pneumonia_score = calibrate_score(pneumonia_raw)
+                mass_score = calibrate_score(mass_raw)
                 
-                # Estimate normal healthy tissue probability based on total pathology burden
-                max_pathology_val = max([max(0.0, float(v)) for v in preds.values()])
-                normal_score = max(0.0, min(100.0, (1.0 - max_pathology_val) * 100))
+                # Normal score is high when top pathology signals remain low
+                max_pathology_signal = max([calibrate_score(v) for v in raw_preds.values()])
+                normal_score = max(0.0, 100.0 - max_pathology_signal)
 
-                real_scores = {
+                calibrated_scores = {
                     "Pneumonia Signs": pneumonia_score,
-                    "Mass / Nodules": mass_nodule_score,
+                    "Mass / Nodules": mass_score,
                     "Normal Healthy Tissues": normal_score
                 }
 
-                st.subheader("📊 Diagnostic Probability Breakdown")
-                for finding, prob_percentage in real_scores.items():
+                st.subheader("📊 Calibrated Diagnostic Probability Breakdown")
+                for finding, prob_percentage in calibrated_scores.items():
                     st.write(f"**{finding}**")
                     st.progress(int(prob_percentage))
                     st.write(f"Confidence score: {prob_percentage:.2f}%")
 
                 # Expanded clinical breakdown displaying top predictions
-                with st.expander("🔬 Detailed Multi-Pathology Spectrum (Real Model Outputs)"):
-                    sorted_pathologies = sorted(preds.items(), key=lambda x: x[1], reverse=True)
-                    for path_name, score in sorted_pathologies[:5]:
-                        st.write(f"• **{path_name}:** {max(0.0, score)*100:.1f}% correlation")
+                with st.expander("🔬 Detailed Multi-Pathology Spectrum (Calibrated & Raw)"):
+                    sorted_pathologies = sorted(raw_preds.items(), key=lambda x: x[1], reverse=True)
+                    for path_name, raw_val in sorted_pathologies[:5]:
+                        cal_val = calibrate_score(raw_val)
+                        st.write(f"• **{path_name}:** {cal_val:.1f}% calibrated score (Raw: {raw_val*100:.1f}%)")
 
             # --- AUTOMATIC REPORT GENERATION ---
             st.markdown("---")
             st.header("📝 Automated Clinical Findings Report")
             
-            highest_finding = max(real_scores, key=real_scores.get)
+            highest_finding = max(calibrated_scores, key=calibrated_scores.get)
             
             report_text = f"""==================================================
 RADIOLOGY DEPARTMENT SERVICES
@@ -124,9 +143,9 @@ Presented Symptoms: {diagnostic_notes if diagnostic_notes else 'None documented.
 Primary Structural Density Match: {highest_finding}
 
 [PROBABILITY BREAKDOWN METRICS]
-- Pneumonia Signs: {real_scores['Pneumonia Signs']:.2f}%
-- Mass / Nodules: {real_scores['Mass / Nodules']:.2f}%
-- Normal Healthy Tissues: {real_scores['Normal Healthy Tissues']:.2f}%
+- Pneumonia Signs: {calibrated_scores['Pneumonia Signs']:.2f}%
+- Mass / Nodules: {calibrated_scores['Mass / Nodules']:.2f}%
+- Normal Healthy Tissues: {calibrated_scores['Normal Healthy Tissues']:.2f}%
 
 [DIAGNOSTIC NOTICE]
 The computer vision system flags structural metrics matching '{highest_finding}' as the highest probabilistic correlation. This output is strictly designed for workflow prioritization and rapid triage support. 
