@@ -8,7 +8,7 @@ import torchxrayvision as xrv
 
 # 1. Page Configuration and Title Styling
 st.set_page_config(page_title="Radiologist AI Assistant", layout="wide")
-st.title("🔍 Radiologist AI Assistant")
+st.title("Radiologist AI Assistant")
 st.write("An open-source computer vision support tool utilizing pre-trained deep learning weights for rapid scan evaluation.")
 
 # --- SIDEBAR: CLINICAL PATIENT DOSSIER ---
@@ -32,16 +32,16 @@ model = load_medical_model()
 col1, col2 = st.columns(2)
 
 with col1:
-    st.header("📸 Scan Upload")
+    st.header("Scan Upload")
     uploaded_file = st.file_uploader("Drag and drop your X-ray image here...", type=["png", "jpg", "jpeg"])
     
     # --- CRITICAL REAL-WORLD SAFETY GATE ---
     st.markdown("---")
-    st.subheader("🛡️ Clinical Quality Assurance")
+    st.subheader("Clinical Quality Assurance")
     anatomy_confirmed = st.checkbox("Confirm uploaded image is an Anterior-Posterior Thoracic (Chest) Scan", value=False)
 
 with col2:
-    st.header("🔍 Visual & AI Analysis")
+    st.header("Visual & AI Analysis")
     
     if uploaded_file is not None:
         # Load and render the visual image to the dashboard page
